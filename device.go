@@ -1,3 +1,4 @@
+//go:build linux
 // +build linux
 
 package evdev
@@ -101,6 +102,24 @@ func (dev *InputDevice) ReadOne() (*InputEvent, error) {
 	return &event, err
 }
 
+func (dev *InputDevice) Ioctl(name uintptr, data unsafe.Pointer) syscall.Errno {
+	c, err := dev.File.SyscallConn()
+	if err != nil {
+		// The only error SyscallConn will return is os.ErrorInvalid
+		return syscall.EINVAL
+	}
+
+	var errno syscall.Errno
+	c.Control(func(fd uintptr) {
+		errno = ioctl(fd, name, data)
+	})
+	return errno
+}
+
+func (dev *InputDevice) Close() error {
+	return dev.File.Close()
+}
+
 // Get a useful description for an input device. Example:
 //   InputDevice /dev/input/event3 (fd 3)
 //     name Logitech USB Laser Mouse
@@ -116,12 +135,12 @@ func (dev *InputDevice) String() string {
 	evtypes_s := strings.Join(evtypes, ", ")
 
 	return fmt.Sprintf(
-		"InputDevice %s (fd %d)\n"+
+		"InputDevice %s (file %v)\n"+
 			"  name %s\n"+
 			"  phys %s\n"+
 			"  bus 0x%04x, vendor 0x%04x, product 0x%04x, version 0x%04x\n"+
 			"  events %s",
-		dev.Fn, dev.File.Fd(), dev.Name, dev.Phys, dev.Bustype,
+		dev.Fn, dev.File, dev.Name, dev.Phys, dev.Bustype,
 		dev.Vendor, dev.Product, dev.Version, evtypes_s)
 }
 
@@ -136,7 +155,7 @@ func (dev *InputDevice) set_device_capabilities() error {
 	codebits := new([(KEY_MAX + 1) / 8]byte)
 	// absbits  := new([6]byte)
 
-	err := ioctl(dev.File.Fd(), uintptr(EVIOCGBIT(0, EV_MAX)), unsafe.Pointer(evbits))
+	err := dev.Ioctl(uintptr(EVIOCGBIT(0, EV_MAX)), unsafe.Pointer(evbits))
 	if err != 0 {
 		return err
 	}
@@ -146,7 +165,7 @@ func (dev *InputDevice) set_device_capabilities() error {
 		if evbits[evtype/8]&(1<<uint(evtype%8)) != 0 {
 			eventcodes := make([]CapabilityCode, 0)
 
-			err = ioctl(dev.File.Fd(), uintptr(EVIOCGBIT(evtype, KEY_MAX)), unsafe.Pointer(codebits))
+			err = dev.Ioctl(uintptr(EVIOCGBIT(evtype, KEY_MAX)), unsafe.Pointer(codebits))
 			if err != 0 {
 				// ignore invalid capabilities such as EV_REP for some devices
 				if err == syscall.EINVAL {
@@ -180,18 +199,18 @@ func (dev *InputDevice) set_device_info() error {
 	name := new([MAX_NAME_SIZE]byte)
 	phys := new([MAX_NAME_SIZE]byte)
 
-	err := ioctl(dev.File.Fd(), uintptr(EVIOCGID), unsafe.Pointer(&info))
+	err := dev.Ioctl(uintptr(EVIOCGID), unsafe.Pointer(&info))
 	if err != 0 {
 		return err
 	}
 
-	err = ioctl(dev.File.Fd(), uintptr(EVIOCGNAME), unsafe.Pointer(name))
+	err = dev.Ioctl(uintptr(EVIOCGNAME), unsafe.Pointer(name))
 	if err != 0 {
 		return err
 	}
 
 	// it's ok if the topology info is not available
-	ioctl(dev.File.Fd(), uintptr(EVIOCGPHYS), unsafe.Pointer(phys))
+	dev.Ioctl(uintptr(EVIOCGPHYS), unsafe.Pointer(phys))
 
 	dev.Name = bytes_to_string(name)
 	dev.Phys = bytes_to_string(phys)
@@ -202,7 +221,7 @@ func (dev *InputDevice) set_device_info() error {
 	dev.Version = info.version
 
 	ev_version := new(int)
-	err = ioctl(dev.File.Fd(), uintptr(EVIOCGVERSION), unsafe.Pointer(ev_version))
+	err = dev.Ioctl(uintptr(EVIOCGVERSION), unsafe.Pointer(ev_version))
 	if err != 0 {
 		return err
 	}
@@ -217,7 +236,7 @@ func (dev *InputDevice) set_device_info() error {
 //       to repeat (in milliseconds)
 func (dev *InputDevice) GetRepeatRate() *[2]uint {
 	repeat_delay := new([2]uint)
-	ioctl(dev.File.Fd(), uintptr(EVIOCGREP), unsafe.Pointer(repeat_delay))
+	dev.Ioctl(uintptr(EVIOCGREP), unsafe.Pointer(repeat_delay))
 
 	return repeat_delay
 }
@@ -226,13 +245,13 @@ func (dev *InputDevice) GetRepeatRate() *[2]uint {
 func (dev *InputDevice) SetRepeatRate(repeat, delay uint) {
 	repeat_delay := new([2]uint)
 	repeat_delay[0], repeat_delay[1] = repeat, delay
-	ioctl(dev.File.Fd(), uintptr(EVIOCSREP), unsafe.Pointer(repeat_delay))
+	dev.Ioctl(uintptr(EVIOCSREP), unsafe.Pointer(repeat_delay))
 }
 
 // Grab the input device exclusively.
 func (dev *InputDevice) Grab() error {
 	grab := int(1)
-	if err := ioctl(dev.File.Fd(), uintptr(EVIOCGRAB), unsafe.Pointer(&grab)); err != 0 {
+	if err := dev.Ioctl(uintptr(EVIOCGRAB), unsafe.Pointer(&grab)); err != 0 {
 		return err
 	}
 
@@ -241,7 +260,7 @@ func (dev *InputDevice) Grab() error {
 
 // Release a grabbed input device.
 func (dev *InputDevice) Release() error {
-	if err := ioctl(dev.File.Fd(), uintptr(EVIOCGRAB), unsafe.Pointer(nil)); err != 0 {
+	if err := dev.Ioctl(uintptr(EVIOCGRAB), unsafe.Pointer(nil)); err != 0 {
 		return err
 	}
 
